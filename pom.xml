@@ -11,4 +11,14 @@
         <maven.compiler.target>22</maven.compiler.target>
         <exec.mainClass>com.mycompany.chatserver.Chatserver</exec.mainClass>
     </properties>
+    <dependencies>
+    <!-- PostgreSQL JDBC Driver -->
+    <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>42.7.5</version> <!-- أو اختر الإصدار الذي تريده -->
+    </dependency>
+</dependencies>
+
 </project>
+

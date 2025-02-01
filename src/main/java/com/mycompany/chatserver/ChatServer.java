@@ -1,7 +1,6 @@
 /*
  * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
  */
-
 package com.mycompany.chatserver;
 
 /**
@@ -13,18 +12,24 @@ import java.net.*;
 import java.io.*;
 import java.sql.*;
 import java.util.*;
+import java.sql.*;
+import java.net.*;
+import java.io.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+
 
 public class ChatServer {
-    private static final int PORT = 1234;
-    private static HashMap<String, ClientHandler> clients = new HashMap<>();
-    private static Connection dbConnection;
+   private static final String DB_URL = "jdbc:postgresql://aws-0-eu-central-1.pooler.supabase.com:5432/postgres?user=postgres.vchbhoampyefrguzofuv&password=19988242fa19988242";
+private static final String DB_USER = "postgres"; // أو اسم المستخدم الصحيح لحساب Supabase
+private static final String DB_PASSWORD = "19988242fa19988242";
 
     public static void main(String[] args) {
-        connectToDB();
         
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            System.out.println("Server is running on port " + PORT);
-            
+        try (ServerSocket serverSocket = new ServerSocket(5432)) {
+            System.out.println("Server is running on port 12345...");
+
             while (true) {
                 Socket clientSocket = serverSocket.accept();
                 new ClientHandler(clientSocket).start();
@@ -34,142 +39,67 @@ public class ChatServer {
         }
     }
 
-    private static void connectToDB() {
-        try {
-            Class.forName("com.mysql.cj.jdbc.Driver");
-            dbConnection = DriverManager.getConnection(
-                "jdbc:mysql://your-db-host:3306/chat_app",
-                "db_user",
-                "db_password"
-            );
-            System.out.println("Connected to database");
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
     static class ClientHandler extends Thread {
         private Socket socket;
-        private PrintWriter out;
-        private BufferedReader in;
-        private String phoneNumber;
 
         public ClientHandler(Socket socket) {
             this.socket = socket;
         }
 
         public void run() {
-            try {
-                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                out = new PrintWriter(socket.getOutputStream(), true);
+            try (
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+            ) {
+                System.out.println("Client connected: " + socket.getInetAddress());
 
-                phoneNumber = in.readLine();
-                clients.put(phoneNumber, this);
-                System.out.println(phoneNumber + " connected");
+                String request;
+                while ((request = in.readLine()) != null) {
+                    String[] parts = request.split(" ", 2);
+                    String command = parts[0];
 
-                handleMessages();
+                    if (command.equals("REGISTER")) {
+                        String phoneNumber = parts[1];
+                        PreparedStatement stmt = conn.prepareStatement("INSERT INTO users (phone_number) VALUES (?) ON CONFLICT DO NOTHING");
+                        stmt.setString(1, phoneNumber);
+                        stmt.executeUpdate();
+                        out.println("REGISTERED");
+                    }
 
-            } catch (IOException e) {
-                e.printStackTrace();
-            } finally {
-                try {
-                    socket.close();
-                    clients.remove(phoneNumber);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
-        }
+                    else if (command.equals("SEND")) {
+                        String[] messageParts = parts[1].split(",", 3);
+                        int senderId = Integer.parseInt(messageParts[0]);
+                        int receiverId = Integer.parseInt(messageParts[1]);
+                        String message = messageParts[2];
 
-        private void handleMessages() throws IOException {
-            String inputLine;
-            while ((inputLine = in.readLine()) != null) {
-                String[] parts = inputLine.split(":", 3);
-                String command = parts[0];
-                
-                switch (command) {
-                    case "REGISTER":
-                        registerUser(parts[1]);
-                        break;
-                    case "MESSAGE":
-                        sendMessage(parts[1], parts[2]);
-                        break;
-                    case "GET_HISTORY":
-                        sendHistory(parts[1]);
-                        break;
-                }
-            }
-        }
+                        PreparedStatement stmt = conn.prepareStatement("INSERT INTO messages (sender_id, receiver_id, message) VALUES (?, ?, ?)");
+                        stmt.setInt(1, senderId);
+                        stmt.setInt(2, receiverId);
+                        stmt.setString(3, message);
+                        stmt.executeUpdate();
 
-        private void registerUser(String phone) {
-            try (PreparedStatement stmt = dbConnection.prepareStatement(
-                "INSERT INTO users (phone_number) VALUES (?)")) {
-                stmt.setString(1, phone);
-                stmt.executeUpdate();
-                out.println("REGISTER_SUCCESS");
-            } catch (SQLException e) {
-                out.println("REGISTER_FAIL");
-            }
-        }
+                        out.println("MESSAGE_SENT");
+                    }
 
-        private void sendMessage(String receiverPhone, String message) {
-            try {
-                // Get user IDs
-                int senderId = getUserId(phoneNumber);
-                int receiverId = getUserId(receiverPhone);
+                    else if (command.equals("FETCH")) {
+                        int userId = Integer.parseInt(parts[1]);
+                        PreparedStatement stmt = conn.prepareStatement("SELECT * FROM messages WHERE receiver_id = ?");
+                        stmt.setInt(1, userId);
+                        ResultSet rs = stmt.executeQuery();
 
-                // Save to DB
-                PreparedStatement stmt = dbConnection.prepareStatement(
-                    "INSERT INTO messages (sender_id, receiver_id, message) VALUES (?, ?, ?)");
-                stmt.setInt(1, senderId);
-                stmt.setInt(2, receiverId);
-                stmt.setString(3, message);
-                stmt.executeUpdate();
-
-                // Forward to receiver if online
-                ClientHandler receiver = clients.get(receiverPhone);
-                if (receiver != null) {
-                    receiver.out.println("MESSAGE:" + phoneNumber + ":" + message);
+                        while (rs.next()) {
+                            String msg = rs.getString("message");
+                            out.println("MESSAGE: " + msg);
+                        }
+                        out.println("END_OF_MESSAGES");
+                    }
                 }
 
-                out.println("MESSAGE_SENT");
-
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-        }
-
-        private int getUserId(String phone) throws SQLException {
-            PreparedStatement stmt = dbConnection.prepareStatement(
-                "SELECT id FROM users WHERE phone_number = ?");
-            stmt.setString(1, phone);
-            ResultSet rs = stmt.executeQuery();
-            return rs.next() ? rs.getInt("id") : -1;
-        }
-
-        private void sendHistory(String contactPhone) {
-            try {
-                int userId = getUserId(phoneNumber);
-                int contactId = getUserId(contactPhone);
-
-                PreparedStatement stmt = dbConnection.prepareStatement(
-                    "SELECT * FROM messages WHERE (sender_id = ? AND receiver_id = ?) " +
-                    "OR (sender_id = ? AND receiver_id = ?) ORDER BY sent_at");
-                stmt.setInt(1, userId);
-                stmt.setInt(2, contactId);
-                stmt.setInt(3, contactId);
-                stmt.setInt(4, userId);
-
-                ResultSet rs = stmt.executeQuery();
-                while (rs.next()) {
-                    String historyMsg = String.format("HISTORY:%s:%s",
-                        rs.getString("sender_id").equals(String.valueOf(userId)) ? "You" : contactPhone,
-                        rs.getString("message"));
-                    out.println(historyMsg);
-                }
-            } catch (SQLException e) {
+            } catch (IOException | SQLException e) {
                 e.printStackTrace();
             }
         }
     }
-}
+    }
+
